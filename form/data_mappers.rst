@@ -1,14 +1,17 @@
 .. index::
     single: Form; Data mappers
 
-How to Use Data Mappers
-=======================
+When and How to Use Data Mappers
+================================
 
-Data mappers are the layer between your form data (e.g. the bound object) and
-the form. They are responsible for mapping the data to the fields and back. The
-built-in data mapper uses the :doc:`PropertyAccess component </components/property_access>`
-and will fit most cases. However, you can create your own data mapper that
-could, for example, pass data to immutable objects via their constructor.
+When a form is compound, the initial data needs to be passed to children so each can display their
+own input value. On submission, children values need to be written back into the form.
+
+Data mappers are responsible for reading and writing data from and into parent forms.
+
+The main built-in data mapper uses the :doc:`PropertyAccess component </components/property_access>`
+and will fit most cases. However, you can create your implementation that
+could, for example, pass submitted data to immutable objects via their constructor.
 
 The Difference between Data Transformers and Mappers
 ----------------------------------------------------
@@ -18,12 +21,10 @@ It is important to know the difference between
 
 * **Data transformers** change the representation of a value. E.g. from
   ``"2016-08-12"`` to a ``DateTime`` instance;
-* **Data mappers** map data (e.g. an object) to form fields, and vice versa.
+* **Data mappers** map data (e.g. an object or array) to form fields, and vice versa.
 
 Changing a ``YYYY-mm-dd`` string value to a ``DateTime`` instance is done by a
-data transformer. Mapping this ``DateTime`` instance to a property on your
-object (e.g. by calling a setter or some other method) is done by a data
-mapper.
+data transformer. Populating inner fields (e.g year, hour, etc) of a compound date type using a ``DateTime`` instance is done by the data mapper.
 
 Creating a Data Mapper
 ----------------------
@@ -31,33 +32,33 @@ Creating a Data Mapper
 Suppose that you want to save a set of colors to the database. For this, you're
 using an immutable color object::
 
-    // src/AppBundle/Colors/Color.php
-    namespace AppBundle\Colors;
+    // src/App/Painting/Color.php
+    namespace App\Painting;
 
-    class Color
+    final class Color
     {
         private $red;
         private $green;
         private $blue;
 
-        public function __construct($red, $green, $blue)
+        public function __construct(int $red, int $green, int $blue)
         {
             $this->red = $red;
             $this->green = $green;
             $this->blue = $blue;
         }
 
-        public function getRed()
+        public function getRed(): int
         {
             return $this->red;
         }
 
-        public function getGreen()
+        public function getGreen(): int
         {
             return $this->green;
         }
 
-        public function getBlue()
+        public function getBlue(): int
         {
             return $this->blue;
         }
@@ -80,47 +81,58 @@ form fields. Recognize a familiar pattern? It's time for a data mapper!
 
 .. code-block:: php
 
-    // src/AppBundle/Form/DataMapper/ColorMapper.php
-    namespace AppBundle\Form\DataMapper;
+    // src/App/Form/DataMapper/ColorMapper.php
+    namespace App\Form\DataMapper;
 
-    use AppBundle\Colors\Color;
+    use App\Painting\Color;
     use Symfony\Component\Form\DataMapperInterface;
     use Symfony\Component\Form\Exception\UnexpectedTypeException;
+    use Symfony\Component\Form\FormInterface;
 
-    class ColorMapper implements DataMapperInterface
+    final class ColorMapper implements DataMapperInterface
     {
+        /**
+         * {@inheritdoc}
+         *
+         * @param Color|null $data
+         */
         public function mapDataToForms($data, $forms)
         {
-            // there is no data yet, a new color will be created
+            // there is no data yet, so nothing to prepopulate
             if (null === $data) {
                 return;
             }
 
-            // invalid data type, this message will not be shown to the user (see below)
+            // invalid data type
             if (!$data instanceof Color) {
                 throw new UnexpectedTypeException($data, Color::class);
             }
 
+            /** @var FormInterface[] $forms */
             $forms = iterator_to_array($forms);
 
-            // set form field values
+            // initialize form field values
             $forms['red']->setData($data->getRed());
             $forms['green']->setData($data->getGreen());
             $forms['blue']->setData($data->getBlue());
         }
 
+        /**
+         * {@inheritdoc}
+         */
         public function mapFormsToData($forms, &$data)
         {
+            /** @var FormInterface[] $forms */
             $forms = iterator_to_array($forms);
-
-            // get form field values
-            $red = $forms['red']->getData();
-            $green = $forms['green']->getData();
-            $blue = $forms['blue']->getData();
 
             // as data is passed by reference, overriding it will change it in
             // the form object as well
-            $data = new Color($red, $green, $blue);
+            // beware of type inconsistency, see caution below
+            $data = new Color(
+                $forms['red']->getData(),
+                $forms['green']->getData(),
+                $forms['blue']->getData()
+            );
         }
     }
 
@@ -134,44 +146,59 @@ Using the Mapper
 ----------------
 
 You're ready to use the data mapper for the ``ColorType`` form. Use the
-:method:`Symfony\\Component\\Form\\FormBuilderInterface::setDataMapper`
+:method:`Symfony\\Component\\Form\\FormConfigBuilderInterface::setDataMapper`
 method to configure the data mapper::
 
-    // src/AppBundle/Form/ColorType.php
-    namespace AppBundle\Form;
+    // src/App/Form/Type/ColorType.php
+    namespace App\Form\Type;
 
-    use AppBundle\Form\DataMapper\ColorMapper;
+    use App\Form\DataMapper\ColorMapper;
+    use Symfony\Component\Form\Extension\Core\Type\IntegerType;
 
-    // ...
-    class ColorType extends AbstractType
+    final class ColorType extends AbstractType
     {
+        /**
+         * {@inheritdoc}
+         */
         public function buildForm(FormBuilderInterface $builder, array $options)
         {
             $builder
-                ->add('red', 'integer')
-                ->add('green', 'integer')
-                ->add('blue', 'integer')
-
+                ->add('red', IntegerType::class, array(
+                    // enforce the strictness of the type to ensure the constructor
+                    // of the Color class doesn't break
+                    'empty_data' => '0',
+                ))
+                ->add('green', IntegerType::class, array(
+                    'empty_data' => '0',
+                ))
+                ->add('blue', IntegerType::class, array(
+                    'empty_data' => '0',
+                ))
                 ->setDataMapper(new ColorMapper())
             ;
         }
 
+        /**
+         * {@inheritdoc}
+         */
         public function configureOptions(OptionsResolver $resolver)
         {
-            $resolver->setDefaults(array(
-                // when creating a new color, the initial data should be null
-                'empty_data' => null,
-            ));
+            $resolver
+                ->setDefaults(array(
+                    // when creating a new color, the initial data should be null
+                    'empty_data' => null,
+                ))
+            ;
         }
     }
 
 Cool! When using the ``ColorType`` form, the custom ``ColorMapper`` will create
-the ``Color`` object now.
+a new ``Color`` object now.
 
 .. caution::
 
-    When a form field has the ``inherit_data`` option set, data mappers won't
-    be applied to that field.
+    When a form has ``inherit_data`` option set to ``true``, it does not use the data mapper and
+    lets its parent map inner values.
 
 .. tip::
 
